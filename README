@@ -1,0 +1,49 @@
+OSS/user_proc
+	OSS simulates a Linux-like multi-level feedback queue-based schedulering system. It spawns an instance of user_proc every ~0.75s
+on average, up to 18 at a time, initializing their process control blocks and placing them into a real time or active queue based on their
+class and priority level. At the same time, it schedules a process to run for a given quantum every ~0.2s using a message queue, then waits 
+until the child sends a reply message before repeating. Within the instance of user_proc, the child either terminates, runs for all or part
+of its quantum, or becomes blocked, then sends a message to OSS telling what happened and how much time was used. If the process became blocked,
+OSS moves it to a blocked queue, the process enters a loop for 0-2.999 s, then changes its state to ready. In OSS, each time the scheduler is
+called, it checks the blocked queue for any ready processes, moving them to active queue 1.
+	OSS simulates time usage for each of the above actions, keeping track of statistics for each child as well as cumulative statisitcs. It
+runs until 100 child process have been spawned, then until all have terminated, or until 3 real seconds have passed. Finally, it creates an
+output log listing each action taken, and how much time it took, as well as final statistics such as average cpu time per process, average
+wait time, throughput, and proportion of time OS was active. OS is considered active during dispatch, swapping, unblocking, and when a child is
+running. 
+
+
+Installation
+	After download, navigate to the directory containing the source files. From the command line, enter "make".
+
+
+Invocation
+	From the directory containing the oss and user_proc executables:
+./oss	// runs operating system simulation
+
+
+Version Control
+	Git was used for version control. A full change log can be found at https://github.com/adwzq4/OS-Project-4/commits/master
+
+
+MIT License
+
+Copyright (c) 2020 Adam Wilson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
