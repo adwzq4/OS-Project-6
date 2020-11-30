@@ -27,8 +27,8 @@ struct mtime {
 
 // holds cumulative statistics
 struct statistics {
-	struct mtime lifeTime;
-	struct mtime waitTime;
+	struct mtime processAccessTimes[18];
+	int processRerences[18];
 	int numReferences;
 	int numPageFaults;
 };

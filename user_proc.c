@@ -15,9 +15,9 @@
 #include "shared.h"
 
 int msqid, shmid, semid;
-union semun sem;
-struct sembuf p = { 0, -1, SEM_UNDO };
-struct sembuf v = { 0, +1, SEM_UNDO };
+//union semun sem;
+//struct sembuf p = { 0, -1, SEM_UNDO };
+//struct sembuf v = { 0, +1, SEM_UNDO };
 struct shmseg* shmptr;
 
 void attachToSharedMemory(){
@@ -39,10 +39,10 @@ void attachToSharedMemory(){
 	msqid = msgget(msqkey, 0666 | IPC_CREAT);
 	if (msqid == -1) { perror("user_proc: Error"); }
 
-	// create semaphore with specified key
-    semkey = ftok("oss", 484);
-    semid = semget(semkey, 1, 0666 | IPC_CREAT);
-    if (semid < 0) { perror("semget"); }
+	//// create semaphore with specified key
+ //   semkey = ftok("oss", 484);
+ //   semid = semget(semkey, 1, 0666 | IPC_CREAT);
+ //   if (semid < 0) { perror("semget"); }
 }
 
 // simulates an instance of a process spawned by OSS
@@ -57,32 +57,33 @@ int main(int argc, char* argv[]) {
 	attachToSharedMemory();
 	srand(pid * shmptr->currentTime.ns);
 	initTime = shmptr->currentTime;
-	term = shmptr->stats.numReferences + rand() % 200 + 100;
+	term = shmptr->stats.numReferences + rand() % 200 + 900;
 
 	// until the process terminates, it will continue to request addresses
 	while (1) {
-	//for (i = 0; i < 50; i++){
 		buf.type = 20;
 		buf.info.pid = pid;
 		
 		// wait between 0-1ms
-		waitTil = addTime(shmptr->currentTime, 0, rand() % MILLION / 2);
+		waitTil = addTime(shmptr->currentTime, 0, rand() % MILLION);
 		while (!compareTimes(shmptr->currentTime, waitTil));
 
-		if (shmptr->stats.numReferences >= term && rand() % TERMRATIO == 0) {
-			term += 100 + rand() % 200;
-			buf.info.act = terminate;
-			buf.info.address = -1;
-		    if (msgsnd(msqid, &buf, sizeof(struct msgInfo), 0) == -1) { perror("user_proc: Error"); }
-			break;
+		if (shmptr->stats.numReferences >= term) {
+			if (rand() % TERMRATIO == 0) {
+				buf.info.act = terminate;
+				buf.info.address = -1;
+				if (msgsnd(msqid, &buf, sizeof(struct msgInfo), 0) == -1) { perror("user_proc: Error"); }
+				break;
+			}
+			else term += rand() % 50;
 		}
 
-		buf.info.act = readReq;
+		if (rand() % 10 >= 8) { buf.info.act = readReq; }
+		else { buf.info.act = writeReq;  }
 		buf.info.address = rand() % 32768;
+		
 		if (msgsnd(msqid, &buf, sizeof(struct msgInfo), 0) == -1) { perror("user_proc: Error"); }
-
 		if (msgrcv(msqid, &buf, sizeof(struct msgInfo), buf.info.pid + 1, 0) == -1) { perror("user_proc: Error"); }
-		printf("user_proc: read of %d confirmed\n", buf.info.address);
 	}
 
 	// detaches shmseg from shared memory

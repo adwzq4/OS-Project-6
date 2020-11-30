@@ -19,11 +19,13 @@ Installation
 
 Invocation
 	From the directory containing the oss and user_proc executables:
-./oss	// runs operating system simulation
+./oss		// runs operating system simulation with default arguments
+./oss -x 2	// invokes oss with xVal set to 2, i.e. address favoritism; default is 1, i.e. random addresses
+./oss -t 6	// invokes oss with a time limit of 6 real-life seconds, the minimum to complete all processs; default is 2 seconds  
 
 
 Version Control
-	Git was used for version control. A full change log can be found at https://github.com/adwzq4/OS-Project-4/commits/master
+	Git was used for version control. A full change log can be found at https://github.com/adwzq4/OS-Project-6/commits/master
 
 
 MIT License
