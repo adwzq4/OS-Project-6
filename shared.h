@@ -10,7 +10,7 @@
 #define MILLION 1000000
 
 // process actions
-enum action { readReq, writeReq, confirm, terminate, block, wake };
+enum action { readReq, writeReq, confirm, terminate, save };
 
 // declare semaphore union
 union semun {
@@ -43,13 +43,13 @@ struct msgbuf {
 	} info;
 };
 
+// page
 struct page {
 	int frameNum;
-	//int permissions;
 	int validBit;
-	//int dirtyBit : 1;
 };
 
+// frame
 struct frame {
 	int pid;
 	int pageNum;
@@ -67,13 +67,14 @@ struct shmseg {
 	int PIDmap[18];
 };
 
+// page request
 struct pageRequest {
 	int pid;
 	int address;
 	enum action act;
 };
 
-// queue struct to holding waitingProc structs
+// queue struct to hold pageRequest structs
 struct pageQueue {
     int front, rear, size;
     int capacity;

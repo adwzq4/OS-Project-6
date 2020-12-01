@@ -50,9 +50,9 @@ double timeToDouble(struct mtime t) { return t.sec + (double)t.ns / BILLION; }
 // creates queue with capacity of 20 and initial size of 0
 struct pageQueue* createQueue() {
     struct pageQueue* queue = (struct pageQueue*)malloc(sizeof(struct pageQueue));
-    queue->capacity = 20;
+    queue->capacity = 50;
     queue->front = queue->size = 0;
-    queue->rear = 19;
+    queue->rear = 49;
     queue->array = (struct pageRequest*)malloc(queue->capacity * sizeof(struct pageRequest));
     return queue;
 }

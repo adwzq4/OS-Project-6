@@ -1,16 +1,20 @@
 OSS/user_proc
-	OSS simulates a Linux-like multi-level feedback queue-based schedulering system. It spawns an instance of user_proc every ~0.75s
-on average, up to 18 at a time, initializing their process control blocks and placing them into a real time or active queue based on their
-class and priority level. At the same time, it schedules a process to run for a given quantum every ~0.2s using a message queue, then waits 
-until the child sends a reply message before repeating. Within the instance of user_proc, the child either terminates, runs for all or part
-of its quantum, or becomes blocked, then sends a message to OSS telling what happened and how much time was used. If the process became blocked,
-OSS moves it to a blocked queue, the process enters a loop for 0-2.999 s, then changes its state to ready. In OSS, each time the scheduler is
-called, it checks the blocked queue for any ready processes, moving them to active queue 1.
-	OSS simulates time usage for each of the above actions, keeping track of statistics for each child as well as cumulative statisitcs. It
-runs until 100 child process have been spawned, then until all have terminated, or until 3 real seconds have passed. Finally, it creates an
-output log listing each action taken, and how much time it took, as well as final statistics such as average cpu time per process, average
-wait time, throughput, and proportion of time OS was active. OS is considered active during dispatch, swapping, unblocking, and when a child is
-running. 
+	OSS simulates a demand paging system for swapping disk memory in and out of main memory. It creates a frame table of 256 1k
+frames, and 18 page tables of 32 pages. It then spawns an instance of user_proc every 1-500ms, up to 18 at a time, which continuosly
+request logical memory addressses from OSS. With -m 1, the addresses are randomly chosen from 0-32k; with -m 2, user_proc has a ~1/4
+chance of choosing an address in page 0, ~1/8 chance of an address in page 1, ~1/12 chance of an address in page 2, ~1/16 chance of 
+page 3, and so on, heavily favoring the first few pages. This results in far fewer page faults, and is porbably closer to how real
+processes page usage would look. 80% of requests are to read, 20% to write. After sending the request via message queue, the child 
+waits for OSS to grant the request.
+	OSS translates the requested address into a page number and checks to see if that page table entry is valid, i.e. if the page
+is in a frame. If so it is a page hit and the request is granted, otherwise it is a page fault and the request is enqueued to the disk
+IO queue. Every 14ms, a swap function checks the disk read/write queues, either saving a frame that has been written to to disk, 
+finding a free frame to which a page can be loaded, or, if there are no free frames, using the LRU algorithm to choose a frame to swap 
+out. Out of the unmodified frames, it picks the one that has been least recently used. If all have been modified, it picks the least 
+recently used and must save a frame back. Time of usage is determined by a reference byte for each frame that decays every 100ms and is 
+reset when the frame is accessed, and each frame has a dirty bit that is set whenever the frame is written into.
+	When a child terminates, it frees its frames and outputs its effective access time. Once40 children have run to completion or a 
+time limit is reached (default 2 real life seconds), stats are output to a output.log, including references/sec and page faults/reference.
 
 
 Installation
@@ -20,8 +24,9 @@ Installation
 Invocation
 	From the directory containing the oss and user_proc executables:
 ./oss		// runs operating system simulation with default arguments
-./oss -x 2	// invokes oss with xVal set to 2, i.e. address favoritism; default is 1, i.e. random addresses
-./oss -t 6	// invokes oss with a time limit of 6 real-life seconds, the minimum to complete all processs; default is 2 seconds  
+./oss -m 2	// invokes oss with xVal set to 2, i.e. address favoritism; default is 1, i.e. random addresses
+./oss -t 5	// invokes oss with a time limit of 5 real-life seconds, default is 2 seconds; more than 2
+		// seconds is unnecessary after switching output from stdout to file output; printf slower than fprintf   
 
 
 Version Control

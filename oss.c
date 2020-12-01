@@ -19,18 +19,16 @@
 
 // intra-file globals
 FILE* fp;
-int msqid, shmid, semid, currentChildren, totalProcs, lastPID, xVal, tVal;
+int msqid, shmid, currentChildren, totalProcs, lastPID, xVal, tVal;
 int frameMap[256];
-//union semun sem;
-//struct sembuf p = { 0, -1, SEM_UNDO };
-//struct sembuf v = { 0, +1, SEM_UNDO };
 struct shmseg* shmptr;
 struct pageQueue* pQueue;
+struct pageQueue* fQueue;
 int numTermed = 0, saved = 0;
 
 // creates a shared memory segment, a message queue, and a semaphore
 void createMemory() {
-	key_t shmkey, msqkey, semkey;
+	key_t shmkey, msqkey;
 	
 	shmkey = ftok("oss", 137);
 	shmid = shmget(shmkey, sizeof(struct shmseg), 0666 | IPC_CREAT);
@@ -42,30 +40,23 @@ void createMemory() {
 	shmptr = shmat(shmid, (void*)0, 0);
 	if (shmptr == (void*)-1) { perror("oss: Error"); }
 
- //   semkey = ftok("oss", 484);
- //   semid = semget(semkey, 1, 0666 | IPC_CREAT);
- //   if (semid < 0) { perror("semget"); }
-	//sem.val = 1;
- //   if (semctl(semid, 0, SETVAL, sem) < 0) { perror("semctl"); }
-
 	msqkey = ftok("oss", 731);
 	msqid = msgget(msqkey, 0666 | IPC_CREAT);
 	if (msqid == -1) { perror("oss: Error"); }
 }
 
-// outputs stats, waits for children, destroys message queue and semaphore, and detaches and destroys shared memory
+// outputs stats, waits for children, destroys message queue, and detaches and destroys shared memory
 void terminateOSS() {
 	int i, j, status;
-	printf( "\n\nOSS ran for %.4f s\n", timeToDouble(shmptr->currentTime));
-	printf("Total references: %d\n", shmptr->stats.numReferences);
-	printf("Memory references: %.3f / s\n", shmptr->stats.numReferences / timeToDouble(shmptr->currentTime));
-	printf("Page faults: %.3f / memory access\n", shmptr->stats.numPageFaults / (double)shmptr->stats.numReferences);
-	printf("num complete: %d\n", numTermed);
-	printf("num frames saved to disk: %d\n", saved);
+	fprintf(fp, "\n\nOSS ran for %.4f s\n", timeToDouble(shmptr->currentTime));
+	fprintf(fp, "Total references: %d\n", shmptr->stats.numReferences);
+	fprintf(fp, "Memory references: %.3f / s\n", shmptr->stats.numReferences / timeToDouble(shmptr->currentTime));
+	fprintf(fp, "Page faults: %.3f / memory access\n", shmptr->stats.numPageFaults / (double)shmptr->stats.numReferences);
+	fprintf(fp, "Processes completed: %d\n", numTermed);
+	fprintf(fp, "Number of frames saved to disk: %d\n", saved);
 	fclose(fp);
 	for (i = 0; i < currentChildren; i++) { mWait(&status); }
 	if (msgctl(msqid, IPC_RMID, NULL) == -1) { perror("oss: msgctl"); }
-    //if (semctl(semid, 0, IPC_RMID, 0) == -1) { perror("Can't RPC_RMID"); }
 	if (shmdt(shmptr) == -1) { perror("oss: Error"); }
 	if (shmctl(shmid, IPC_RMID, 0) == -1) {
 		perror("oss: Error");
@@ -109,7 +100,7 @@ static int setupSIGINT(void) {
 	return (sigaction(SIGINT, &sigIntAct, NULL));
 }
 
-// sets ups itimer with time of 5s and interval of 0s
+// sets ups itimer with default time of 2s, which can be changed by -t parameter, and interval of 0s
 static int setupitimer() {
 	struct itimerval value = { {0, 0}, {tVal, 0} };
 	return (setitimer(ITIMER_REAL, &value, NULL));
@@ -131,36 +122,43 @@ static int setupInterrupts() {
 	}
 }
 
-// displays frame allocation
+// displays frame allocation: a + indicates occupied, while a . indicates unoccupied
 void displayFrameMap(){
 	int i, j;
-	printf("\nFrame allocation:\n");
+	fprintf(fp, "\nFrame allocation:\n");
 	for (i = 0; i < 16; i++) {
 		for (j = 0; j < 16; j++) {
-			printf("%3d ", 16 * i + j);
-			if (frameMap[16 * i + j] == 1) { printf("+ "); }
-			else { printf(". "); }
+			fprintf(fp, "%3d ", 16 * i + j);
+			if (frameMap[16 * i + j]) { fprintf(fp, "+ "); }
+			else { fprintf(fp, ". "); }
 		}
-		printf("\n");
+		fprintf(fp, "\n");
 	}
-	printf("\n");
+	fprintf(fp, "\n");
 }
 
-// handles process termination, releasing any allocated frames
+// handles process termination, checking the page table any frames allocated to the process and releasing them
 void terminateProc(int pid) {
-	int status, i, counter = 0;
+	int status, i, frames = 0, dirty = 0;
 
 	for (i = 0; i < 32; i++) {
 		if (shmptr->pageTables[pid][i].validBit == 1) {
-			if (shmptr->frameTable[shmptr->pageTables[pid][i].frameNum].dirtyBit == 1) { saved++; }
+			// if dirty bit of a page is set, enqueue it to the disk write queue
+			if (shmptr->frameTable[shmptr->pageTables[pid][i].frameNum].dirtyBit == 1) { 
+				saved++;
+				dirty++;
+				enqueue(fQueue, (struct pageRequest) { shmptr->pageTables[pid][i].frameNum, -1, save });
+			}
 			shmptr->frameTable[shmptr->pageTables[pid][i].frameNum] = (struct frame) { -1, -1, 0, 0, 0 };
 			frameMap[shmptr->pageTables[pid][i].frameNum] = 0;
-			counter++;
+			frames++;
 			shmptr->pageTables[pid][i] = (struct page) { -1, 0 };
 		}
 	}
-	printf("OSS: P%d terminated, freeing %d frames;\n\tits effective memory access time was %d us / memory request\n",
-		pid, counter, (int) timeToDouble(shmptr->stats.processAccessTimes[pid]) * MILLION / shmptr->stats.processRerences[pid]);
+
+	// display info about process termination, including effective memory access time
+	fprintf(fp, "OSS: P%d terminated, freeing %d frames, %d of which need to be saved to disk;\n\tits effective memory access time was %d us / memory request\n",
+		pid, frames, dirty, (int) (timeToDouble(shmptr->stats.processAccessTimes[pid]) * MILLION) / shmptr->stats.processRerences[pid]);
 	numTermed++;
 	shmptr->PIDmap[pid] = 0;
 	mWait(&status);
@@ -191,57 +189,53 @@ void spawnChildProc() {
 		perror("oss: fork Error");
 	}
 
-	// exec child
+	// exec child with pid and xVal as parameters
 	else if (pid == 0) {
-		char index[2];
+		char index[10];
+		char x[10];
 		sprintf(index, "%d", i);
-		execl("user_proc", index, (char*)NULL);
+		sprintf(x, "%d", xVal);
+		execl("user_proc", index, x, (char*)NULL);
 		exit(0);
 	}
 
-	else { printf("OSS: generating P%d at time %f s\n", i, timeToDouble(shmptr->currentTime)); }
+	else { fprintf(fp, "OSS: generating P%d at time %f s\n", i, timeToDouble(shmptr->currentTime)); }
 }
 
 void swapper() {
 	struct pageRequest pageReq;
 	struct msgbuf buf;
-	int i;
+	int i, min = 257;
 	static int frameNum = -1;
-	if (!isEmpty(pQueue)) {
+	// if any frames are waiting to be saved, dequeue the first one and indicate so, consuming 14ms
+	if (!isEmpty(fQueue)) { 
+		fprintf(fp, "OSS: saving frame %d to disk at %f s\n", dequeue(fQueue).pid, timeToDouble(shmptr->currentTime));
+		for (i = 0; i < pQueue->size; i++) {
+			shmptr->stats.processAccessTimes[pQueue->array[i].pid] = addTime(shmptr->stats.processAccessTimes[pQueue->array[i].pid], 0, 14 * MILLION);
+		}
+	}
+	// otherwise, access the disk read queue if it has any page requests
+	else if (!isEmpty(pQueue)) {
+		// if frameNum is unset, scan frameMap for an available frame
 		if (frameNum == -1) {
 			for (i = 0; i < 256; i++) { if (frameMap[i] == 0) { break; } }
+			// if there is an unoccupied frame, dequeue a page request, update frame map, and indicate there was a free frame; frameNum stays unset
 			if (i < 256) {
 				pageReq = dequeue(pQueue);
 				frameMap[i] = 1;
-				
-				shmptr->frameTable[i] = (struct frame) { pageReq.pid, pageReq.address >> 10, 1, 256, 0 };
-				printf("OSS: putting P%d page %d in free frame %d at %f s\n\t", pageReq.pid, pageReq.address >> 10, i, timeToDouble(shmptr->currentTime));
-				if (pageReq.act == readReq) { printf("and giving data at address %d to P%d\n", pageReq.address, pageReq.pid); }
-				if (pageReq.act == writeReq) {
-					printf("and indicating to P%d that address %d was written to\n", pageReq.pid, pageReq.address);
-					shmptr->frameTable[i].dirtyBit = 1;
-				}
-
-				shmptr->pageTables[pageReq.pid][pageReq.address >> 10] = (struct page) { i, 1 };
-				shmptr->stats.numReferences++;
-				shmptr->stats.processRerences[pageReq.pid]++;
-				shmptr->stats.processAccessTimes[pageReq.pid] = addTime(shmptr->stats.processAccessTimes[pageReq.pid], 0, 14*MILLION);
-				for (i = 0; i < pQueue->size; i++) {
-					shmptr->stats.processAccessTimes[pQueue->array[i].pid] = addTime(shmptr->stats.processAccessTimes[pQueue->array[i].pid], 0, 14*MILLION);
-				}
-				
-				buf = (struct msgbuf) { pageReq.pid + 1, (struct msgInfo) { 20, pageReq.address, confirm }};
-				if (msgsnd(msqid, &buf, sizeof(struct msgInfo), 0) == -1) { perror("OSS: error"); } 
+				fprintf(fp, "OSS: putting P%d page %d in free frame %d at %f s\n\t", pageReq.pid, pageReq.address >> 10, i, timeToDouble(shmptr->currentTime));
 			}
+			// if all frames are occupied, run LRU algorithm with dirty bit optimization
 			else {
-				// LRU algorithm with dirty bit optimization
-				int min = 257;
+				// find minimum refByte of frames whose dirtyBits are unset and assign index to frameNum 
 				for (i = 0; i < 256; i++) {
 					if (shmptr->frameTable[i].refByte < min && shmptr->frameTable[i].dirtyBit == 0) {
 						min = shmptr->frameTable[i].refByte;
 						frameNum = i;
 					}
 				}
+				// if all dirtyBits are set, find minimum refByte, assign index to static var frameNum, enqueue frame to disk write queue,
+				// and return from function, consuming 14ms
 				if (min == 257) {
 					for (i = 0; i < 256; i++) {
 						if (shmptr->frameTable[i].refByte < min) {
@@ -249,44 +243,55 @@ void swapper() {
 							frameNum = i;
 						}
 					}
-					printf("OSS: saving frame %d to disk\n", frameNum);
+					enqueue(fQueue, (struct pageRequest) { frameNum, -1, save });
 					saved++;
 					return;
 				}
 			}
 		}
+		// if frameNum is set, dequeue a page request, reset the corresponding page table entry, write the swap to the log, and unset frameNum
 		if (frameNum > -1) {
 			pageReq = dequeue(pQueue);
-			shmptr->pageTables[shmptr->frameTable[frameNum].pid][shmptr->frameTable[frameNum].pageNum] = (struct page) { -1, 0 };
-			printf("OSS: clearing frame %d and swapping in P%d page %d at %f s,\n\t", frameNum, pageReq.pid, pageReq.address >> 10, timeToDouble(shmptr->currentTime));
-			if (pageReq.act == readReq) { printf("then giving data at address %d to P%d\n", pageReq.address, pageReq.pid); }
-			if (pageReq.act == writeReq) {
-				printf("then indicating to P%d that address %d was written to\n", pageReq.pid, pageReq.address);
-				shmptr->frameTable[frameNum].dirtyBit = 1;
-			}
-			
-			shmptr->stats.numReferences++;
-			shmptr->stats.processRerences[pageReq.pid]++;
-			shmptr->stats.processAccessTimes[pageReq.pid] = addTime(shmptr->stats.processAccessTimes[pageReq.pid], 0, 14 * MILLION);
-			for (i = 0; i < pQueue->size; i++) {
-				shmptr->stats.processAccessTimes[pQueue->array[i].pid] = addTime(shmptr->stats.processAccessTimes[pQueue->array[i].pid], 0, 14 * MILLION);
-			}
-			shmptr->frameTable[frameNum] = (struct frame) { pageReq.pid, pageReq.address >> 10, 1, 256, 0 };
-			shmptr->pageTables[pageReq.pid][pageReq.address >> 10] = (struct page) { frameNum, 1 };
-			
-			buf = (struct msgbuf) { pageReq.pid + 1, (struct msgInfo) { 20, pageReq.address, confirm }};
-			if (msgsnd(msqid, &buf, sizeof(struct msgInfo), 0) == -1) { perror("OSS: error"); } 
+			shmptr->pageTables[shmptr->frameTable[frameNum].pid][shmptr->frameTable[frameNum].pageNum] = (struct page){ -1, 0 };
+			fprintf(fp, "OSS: clearing frame %d and swapping in P%d page %d at %f s,\n\t", frameNum, pageReq.pid, pageReq.address >> 10, timeToDouble(shmptr->currentTime));
+			i = frameNum;
 			frameNum = -1;
 		}
+
+		// put the requested page into the assigned frame, setting refByte to the max value and dirtyBit to 0, and update page table
+		shmptr->pageTables[pageReq.pid][pageReq.address >> 10] = (struct page){ i, 1 };
+		shmptr->frameTable[i] = (struct frame){ pageReq.pid, pageReq.address >> 10, 1, 256, 0 };
+		// write to log whether a read or write occurred, and in the latter case set the corresponding frame's dirty bit to 1
+		if (pageReq.act == readReq) { fprintf(fp, "then giving data at address %d to P%d\n", pageReq.address, pageReq.pid); }
+		if (pageReq.act == writeReq) {
+			fprintf(fp, "then indicating to P%d that address %d was written to\n", pageReq.pid, pageReq.address);
+			shmptr->frameTable[i].dirtyBit = 1;
+		}
+
+		// update stats
+		shmptr->stats.numReferences++;
+		shmptr->stats.processRerences[pageReq.pid]++;
+		shmptr->stats.processAccessTimes[pageReq.pid] = addTime(shmptr->stats.processAccessTimes[pageReq.pid], 0, 14 * MILLION);
+		for (i = 0; i < pQueue->size; i++) {
+			shmptr->stats.processAccessTimes[pQueue->array[i].pid] = addTime(shmptr->stats.processAccessTimes[pQueue->array[i].pid], 0, 14 * MILLION);
+		}
+
+		// send confirmation to waiting child process
+		buf = (struct msgbuf){ pageReq.pid + 1, (struct msgInfo) { 20, pageReq.address, confirm } };
+		if (msgsnd(msqid, &buf, sizeof(struct msgInfo), 0) == -1) { perror("OSS: error"); }
 	}
 }
 
+// spawns processes which request memory addresses, oss grants access via paging
 int main(int argc, char* argv[]) {
 	int randomWait, i, j, opt;
 	const int PROCMAX = 40;
+	struct msgbuf buf;
+	// initialize clocks
 	struct mtime oneSec = { 1, 0 };
 	struct mtime timeToNextProc = { 0, rand() % (BILLION / 2 - 1000000) + 1000000};
-	struct msgbuf buf;
+	struct mtime IO = { 0, 14 * MILLION };
+	struct mtime updateRefBytes = { 0, 100 * MILLION };
 
 	// parses command line arguments
 	xVal = 1, tVal = 2;
@@ -315,8 +320,9 @@ int main(int argc, char* argv[]) {
 	setupFile();
 	srand(time(0));
 	pQueue = createQueue();
+	fQueue = createQueue();
 
-	// initialize PIDmap, frameMap, frameTable, pageTables, stats, and currentTime
+	// initialize PIDmap, frameMap, frameTable, pageTables, stats, and shared/main clock
 	shmptr->stats.numPageFaults = shmptr->stats.numReferences = 0;
 	for (i = 0; i < 18; i++) { 
 		shmptr->stats.processAccessTimes[i] = (struct mtime){ 0, 0 };
@@ -330,16 +336,13 @@ int main(int argc, char* argv[]) {
 		frameMap[i] = 0; 
 		shmptr->frameTable[i] = (struct frame) { -1, -1, 0, 0, 0 };	
 	}
-
 	shmptr->currentTime.sec = shmptr->currentTime.ns = 0;
-	struct mtime IO = { 0, 14 * MILLION };
-	struct mtime updateRefBytes = { 0, 100 * MILLION };
 	
 	// runs OSS until 40 processes have been spawned, and then until all children have terminated
 	while (totalProcs < PROCMAX || currentChildren > 0) {
-		// update shared clock
-		shmptr->currentTime = addTime(shmptr->currentTime, 0, 2*MILLION);
-		if (pQueue->size == 18) shmptr->currentTime = addTime(shmptr->currentTime, 0, 12 * MILLION);
+		// update shared clock, skip to next disk IO if page request queue is full
+		shmptr->currentTime = addTime(shmptr->currentTime, 0, 7*MILLION);
+		if (pQueue->size == 18) shmptr->currentTime = addTime(shmptr->currentTime, 0, 7*MILLION);
 		else {
 			// spawns new process if process table isn't full and PROCMAX hasn't been reached
 			if (compareTimes(shmptr->currentTime, timeToNextProc) && currentChildren < 18 && totalProcs < PROCMAX) {
@@ -354,28 +357,37 @@ int main(int argc, char* argv[]) {
 					continue;
 				}
 				
-				if (buf.info.act == readReq) printf("OSS: P%d requesting read of address %d at %f s\n", buf.info.pid, buf.info.address, timeToDouble(shmptr->currentTime));
-				else printf("OSS: P%d requesting write to address %d at %f s\n", buf.info.pid, buf.info.address, timeToDouble(shmptr->currentTime));
+				// display time at which a process is requesting a read or a write
+				if (buf.info.act == readReq) fprintf(fp, "OSS: P%d requesting read of address %d at %f s\n", buf.info.pid, buf.info.address, timeToDouble(shmptr->currentTime));
+				else fprintf(fp, "OSS: P%d requesting write to address %d at %f s\n", buf.info.pid, buf.info.address, timeToDouble(shmptr->currentTime));
 				
+				// if valid bit is set on the corresponding page table entry, requested page is in a frame; add 10ns and indicate page hit
 				if (shmptr->pageTables[buf.info.pid][buf.info.address >> 10].validBit == 1) {
 					shmptr->currentTime = addTime(shmptr->currentTime, 0, 10);
-					if (buf.info.act == readReq) printf("OSS: address %d in frame %d, giving data to P%d\n",
-														buf.info.address, shmptr->pageTables[buf.info.pid][buf.info.address >> 10].frameNum, buf.info.pid);
-					else printf("OSS: address %d in frame %d, indicating to P%d that write has occurred\n",
+					if (buf.info.act == readReq) fprintf(fp, "OSS: address %d in frame %d, giving data to P%d\n",
 							buf.info.address, shmptr->pageTables[buf.info.pid][buf.info.address >> 10].frameNum, buf.info.pid);
+					else fprintf(fp, "OSS: address %d in frame %d, indicating to P%d that write has occurred\n",
+							buf.info.address, shmptr->pageTables[buf.info.pid][buf.info.address >> 10].frameNum, buf.info.pid);
+					
+					// update stats
 					shmptr->stats.numReferences++;
 					shmptr->stats.processRerences[buf.info.pid]++;
 					shmptr->stats.processAccessTimes[buf.info.pid] = addTime(shmptr->stats.processAccessTimes[buf.info.pid], 0, 10);
 					for (i = 0; i < pQueue->size; i++) {
 						shmptr->stats.processAccessTimes[pQueue->array[i].pid] = addTime(shmptr->stats.processAccessTimes[pQueue->array[i].pid], 0, 10);
 					}
+
+					// set refByte to 256, and set dirtyBit if this is a write request
 					if (buf.info.act == writeReq) { shmptr->frameTable[shmptr->pageTables[buf.info.pid][buf.info.address >> 10].frameNum].dirtyBit = 1; }
 					shmptr->frameTable[shmptr->pageTables[buf.info.pid][buf.info.address >> 10].frameNum].refByte = 256;
+					
+					// send confirmation to waiting child process
 					buf = (struct msgbuf){ buf.info.pid + 1, (struct msgInfo) { 20, buf.info.address, confirm } };
 					if (msgsnd(msqid, &buf, sizeof(struct msgInfo), 0) == -1) { perror("OSS: error"); }
 				}
+				// otherwise there is a page fault; enqueue the page request to the disk read queue
 				else {
-					printf("OSS: address %d is not in a frame: page fault\n", buf.info.address);
+					fprintf(fp, "OSS: address %d is not in a frame: page fault\n", buf.info.address);
 					shmptr->stats.numPageFaults++;
 					if (buf.info.act == readReq) { enqueue(pQueue, (struct pageRequest) { buf.info.pid, buf.info.address, readReq }); }
 					else { enqueue(pQueue, (struct pageRequest) { buf.info.pid, buf.info.address, writeReq }); }
@@ -383,6 +395,7 @@ int main(int argc, char* argv[]) {
 			}
 		}
 
+		// right bit shift the refBytes of all frames by 1 every 100ms
 		if (compareTimes(shmptr->currentTime, updateRefBytes)) {
 			for (i = 0; i < 256; i++) { shmptr->frameTable[i].refByte = shmptr->frameTable[i].refByte >> 1; }
 			updateRefBytes = addTime(shmptr->currentTime, 0, 100 * MILLION);
@@ -402,6 +415,11 @@ int main(int argc, char* argv[]) {
 	}
 
 	// finish up
-	printf("\nOSS: 40 processes have been spawned and run to completion, now terminating OSS\n");
+	//for (i = 0; i < fQueue->size; i++) {
+	//	shmptr->currentTime = addTime(shmptr->currentTime, 0, 14 * MILLION);
+	//	printf("OSS: saving frame %d to disk at %f s\n", dequeue(fQueue).pid, timeToDouble(shmptr->currentTime));
+	//}
+
+	printf("\nOSS: 40 processes have been spawned and run to completion, now terminating OSS\n\n");
 	terminateOSS();
 }
